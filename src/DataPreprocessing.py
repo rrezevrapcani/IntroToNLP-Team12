@@ -71,6 +71,12 @@ def role_distribution(df):
     # print values for fine-grained roles 2
     df['fine-grained_role_2'].value_counts()
 
+def create_df(annotation_path):
+    df = pd.read_csv(annotation_path, sep="\t", header=None,
+                     names=["article_id", "entity_mention", "start_offset", "end_offset", "main_role",
+                            "fine-grained_role_1", "fine-grained_role_2"])
+    return df
+
 
 if __name__ == "__main__":
     # Path to the directory containing .txt files
@@ -90,11 +96,8 @@ if __name__ == "__main__":
     # Class imbalance
 
     # Read the file into a DataFrame
-    df = pd.read_csv(annotation_path, sep="\t", header=None,
-                     names=["article_id", "entity_mention", "start_offset", "end_offset", "main_role",
-                            "fine-grained_role_1", "fine-grained_role_2"])
+    df = create_df(annotation_path)
     print(df.head())
-
     role_distribution(df)
 
     # Check keys in articles_dict
