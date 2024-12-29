@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from DataPreprocessing import create_df, read_and_clean_articles, remove_empty_articles
+from DataPreprocessing import preprocess
 #import torch
 from transformers import BertTokenizer
 tokenizer = BertTokenizer.from_pretrained("bert-large-uncased")
@@ -16,7 +16,7 @@ Bert-large-uncased:
 -notes:
 
 All text is lowercased during tokenization
-Max token lenght is 550
+Max token length is 550
 Longer texts are truncated if exceeding this limit
 Tokenized Articles:
 
@@ -48,19 +48,8 @@ if __name__ == '__main__':
     folder_path = "../data/raw-documents"
     annotation_path = "../data/subtask-1-annotations.txt"
 
-    df = create_df(annotation_path)
-    articles_dict = read_and_clean_articles(folder_path) #Dict with article id's and their cleaned versions
-    cleaned_articles_dict= remove_empty_articles(articles_dict)
-
-    # Separate labeled and unlabeled articles
-    labeled_df = df[df["entity_mention"].notnull()]  # Keep rows with labels
-    print(f"Number of labeled articles: {labeled_df['article_id'].nunique()}")
-    # sub-dictionary for labeled articles
-    labeled_article_ids = labeled_df["article_id"].unique()
-    labeled_articles = {key: value['cleaned'] for key, value in cleaned_articles_dict.items() if
-                        key in labeled_article_ids}
-
-    tokenized_articles = bert_tokenize(labeled_articles)
+    articles = preprocess(folder_path, annotation_path)
+    tokenized_articles = bert_tokenize(articles)
 
     # example output for an entry
     print(tokenized_articles['EN_UA_DEV_26.txt'].keys())

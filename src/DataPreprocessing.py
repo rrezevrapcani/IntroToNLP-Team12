@@ -54,28 +54,47 @@ def remove_empty_articles(articles_dict):
     }
     return non_empty_articles
 
-def role_distribution(df):
+def create_anno_df(annotation_path):
+    anno_df = pd.read_csv(annotation_path, sep="\t", header=None,
+                     names=["article_id", "entity_mention", "start_offset", "end_offset", "main_role",
+                            "fine-grained_role_1", "fine-grained_role_2"])
+    return anno_df
+
+def remove_unlabelled_articles(cleaned_articles_dict, anno_df):
+    # Separate labeled and unlabeled articles
+    labeled_df = anno_df[anno_df["entity_mention"].notnull()]  # Keep rows with labels
+    print(f"Number of labeled articles: {labeled_df['article_id'].nunique()}")
+    # sub-dictionary for labeled articles
+    labeled_article_ids = labeled_df["article_id"].unique()
+    labeled_articles = {key: value['cleaned'] for key, value in cleaned_articles_dict.items() if
+                        key in labeled_article_ids}
+    return labeled_articles
+
+def preprocess(folder_path, annotation_path):
+    articles_dict = read_and_clean_articles(folder_path) #Dict with article id's and their cleaned versions
+    cleaned_articles_dict = remove_empty_articles(articles_dict)
+    anno_df = create_anno_df(annotation_path)
+    labeled_articles = remove_unlabelled_articles(cleaned_articles_dict, anno_df)
+    return labeled_articles
+
+# ---------------------------------------------------- VISUALIZATION
+
+def role_distribution(anno_df):
     # show plot
     plt.figure(figsize=(8, 6))
-    sns.countplot(x='main_role', data=df, order=df['main_role'].value_counts().index)
+    sns.countplot(x='main_role', data=anno_df, order=anno_df['main_role'].value_counts().index)
     plt.title('Distribution of Main Roles')
     plt.xlabel('Main Role')
     _ = plt.ylabel('Frequency')
 
     # print values for main roles
-    df['main_role'].value_counts()
+    anno_df['main_role'].value_counts()
 
     # print values for fine-grained roles 1
-    df['fine-grained_role_1'].value_counts()
+    anno_df['fine-grained_role_1'].value_counts()
 
     # print values for fine-grained roles 2
-    df['fine-grained_role_2'].value_counts()
-
-def create_df(annotation_path):
-    df = pd.read_csv(annotation_path, sep="\t", header=None,
-                     names=["article_id", "entity_mention", "start_offset", "end_offset", "main_role",
-                            "fine-grained_role_1", "fine-grained_role_2"])
-    return df
+    anno_df['fine-grained_role_2'].value_counts()
 
 
 if __name__ == "__main__":
@@ -86,27 +105,29 @@ if __name__ == "__main__":
     # Read and clean articles
 
     articles_dict = read_and_clean_articles(folder_path) #Dict with article id's and their cleaned versions
-    cleaned_articles_dict= remove_empty_articles(articles_dict)
+    cleaned_articles_dict = remove_empty_articles(articles_dict)
     # Access cleaned or original version of an article
     article_id = "EN_UA_DEV_26.txt"  # Replace with the desired filename (without .txt extension)
     print(f"Original number of articles: {len(articles_dict)}")
     print(f"Number of non-empty articles: {len(cleaned_articles_dict)}")
     print("\nCleaned Article:\n", articles_dict[article_id]["cleaned"], "\n")
 
-    # Class imbalance
+    # Read the annotations into a DataFrame
+    anno_df = create_anno_df(annotation_path)
 
-    # Read the file into a DataFrame
-    df = create_df(annotation_path)
-    print(df.head())
-    role_distribution(df)
+
+    # ------------------------------------------------ CLASS IMBALANCE VISUALIZATION
+
+    print(anno_df.head())
+    role_distribution(anno_df)
 
     # Check keys in articles_dict
     print("Keys in articles_dict:", len(articles_dict))
-    print(df.shape)
+    print(anno_df.shape)
     # Check unique article IDs in the DataFrame
-    print("Unique article IDs in df:", len(df["article_id"].unique()))
+    print("Unique article IDs in df:", len(anno_df["article_id"].unique()))
     # Count duplicate entries
-    num_duplicates = df["article_id"].duplicated().sum()
+    num_duplicates = anno_df["article_id"].duplicated().sum()
     print(f"Number of duplicate entries: {num_duplicates}")
 
 
