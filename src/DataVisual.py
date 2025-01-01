@@ -15,6 +15,10 @@ nltk.download('stopwords')
 nltk.download('punkt_tab')
 from nltk.tokenize import word_tokenize, sent_tokenize
 
+'''
+STATISTICS AND VISUALIZATION TECHNIQUES FROM THE PROBLEM FORMULAITON
+'''
+
 
 # ----------------------------------------------- DATA VISUALIZATION
 

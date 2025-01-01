@@ -7,8 +7,11 @@ from transformers import get_scheduler
 import numpy as np
 from SamplePrep import MultiLabelDataset, create_samples
 
-# Assuming tokenized_samples is a list of tokenized examples in this format:
-# {"input_ids": ..., "attention_mask": ..., "labels": ...}
+'''
+THIS IS A FIRST DRAFT OF HOW TRAINING COULD LOOK.
+THIS HAS NOT BEEN RUN SO NO GUARANTEE FOR RESULTS.
+'''
+
 
 # Training Loop
 def train_model():
@@ -82,6 +85,8 @@ if __name__ == "__main__":
     folder_path = "../data/raw-documents"
     annotation_path = "../data/subtask-1-annotations.txt"
 
+    # samples is a list of tokenized examples in this format:
+    # {"input_ids": ..., "attention_mask": ..., "labels": ...}
     samples = create_samples(folder_path, annotation_path)
     print("number of all labels: ", len(samples["labels"]))
     print("number of all labels: ", len(samples["labels"][0]))

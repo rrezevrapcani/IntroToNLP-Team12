@@ -4,6 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+'''
+PREPROCESSING IN THE FORM OF NEWS ARTICLE CLEANING
+ADDITIONALLY THERE IS A METHOD TO CHECK OUT CLASS IMBALANCE
+'''
+
 
 def clean_article(text):
     '''

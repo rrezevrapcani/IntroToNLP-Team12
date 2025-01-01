@@ -3,8 +3,17 @@ import torch
 import pandas as pd
 from transformers import BertTokenizer
 from sklearn.preprocessing import MultiLabelBinarizer
-tokenizer = BertTokenizer.from_pretrained("bert-large-uncased")
 from torch.utils.data import Dataset
+
+tokenizer = BertTokenizer.from_pretrained("bert-large-uncased")
+
+
+'''
+THE NEWS ARTICLES ARE COMBINED WITH THE ANNOTATION SHEET AND FIRST USEFUL SAMPLES FOR TRAINING
+BERT ARE CREATED.
+THIS IS STILL VERY UNFINISHED AS THE CREATION OF TRAINING SAMPLES PROBABLY HAS MUCH IMPACT ON 
+THE EVENTUAL PERFORMANCE.
+'''
 
 
 def create_raw_samples(articles, annotations):
