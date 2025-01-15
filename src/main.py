@@ -1,130 +1,141 @@
 import torch
-from torch.utils.data import DataLoader
-from transformers import BertForSequenceClassification, AdamW
+import torch.nn as nn
+from transformers import BertModel, BertTokenizerFast, Trainer, TrainingArguments
 from sklearn.model_selection import train_test_split
-from torch.nn import BCEWithLogitsLoss
-from transformers import get_scheduler
+import os
+from model import EntityFramingModel
+from dataset import EntityFramingDataset, role2idx, classes2idx, read_data 
 import numpy as np
-from SamplePrep import MultiLabelDataset, create_samples
+from sklearn.metrics import precision_score, recall_score, f1_score
+from torch.nn.utils.rnn import pad_sequence
 
 '''
-THIS IS A FIRST DRAFT OF HOW TRAINING COULD LOOK.
-THIS HAS NOT BEEN RUN SO NO GUARANTEE FOR RESULTS.
+FIRST DRAFT FINE-TUNING BERT FOR ENTITY FRAMING TASK
+
+CONSIDERATIONS:
+- The model is trained to predict the main role of an entity in a news article.
+- The model is also trained to predict secondary roles for the entity.
+- The secondary roles are specific to the main role.
+
 '''
+
+from torch.nn.utils.rnn import pad_sequence
+import torch
+
+# assure all sequences in a batch have the same length(there are data with more than one entity and data with no entity)
+def collate_fn(batch):
+    # find max length
+    max_len = max(len(item['input_ids']) for item in batch)
+    
+    def pad_to_max_len(tensor, max_len, pad_value):
+        pad_size = max_len - len(tensor)
+        return torch.cat([tensor, torch.full((pad_size,), pad_value, dtype=tensor.dtype)])
+
+    input_ids = torch.stack([pad_to_max_len(item['input_ids'], max_len, 0) for item in batch])
+    attention_mask = torch.stack([pad_to_max_len(item['attention_mask'], max_len, 0) for item in batch])
+    token_type_ids = torch.stack([pad_to_max_len(item['token_type_ids'], max_len, 0) for item in batch])
+    ner_labels = torch.stack([pad_to_max_len(item['ner_labels'], max_len, -1) for item in batch])
+    
+    fine_grained_labels = torch.stack([item['fine_grained_labels'] for item in batch])
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "token_type_ids": token_type_ids,
+        "ner_labels": ner_labels,
+        "fine_grained_labels": fine_grained_labels,
+    }
 
 
 # Training Loop
-def train_model():
+def train_model(model, dataloader, optimizer, num_epochs, device):
+    model.to(device)
     model.train()
-    for epoch in range(3):  # Train for 3 epochs
-        total_loss = 0
-        for batch in train_loader:
-            optimizer.zero_grad()
 
-            # Move data to device
+    # maybe something wrong here? also we have to save the best model..
+    for epoch in range(num_epochs):
+        total_loss = 0
+
+        for batch in dataloader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
+            token_type_ids = batch["token_type_ids"].to(device)
+            ner_labels = batch["ner_labels"].to(device)
+            fine_grained_labels = batch["fine_grained_labels"].to(device)
 
-            # Forward pass
-            outputs = model(input_ids, attention_mask=attention_mask)
-            logits = outputs.logits
+            optimizer.zero_grad()
+            
+            loss, ner_logits, fine_grained_logits = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+                ner_labels=ner_labels,
+                secondary_labels=fine_grained_labels
+            )
 
-            # Compute loss
-            loss = loss_fn(logits, labels)
-            total_loss += loss.item()
-
-            # Backward pass and optimization
             loss.backward()
             optimizer.step()
-            scheduler.step()
 
-        avg_loss = total_loss / len(train_loader)
-        print(f"Epoch {epoch + 1}, Loss: {avg_loss:.4f}")
-
-# Evaluation Loop
-def evaluate_model(loader):
-    model.eval()
-    total_loss = 0
-    all_labels = []
-    all_preds = []
-
-    with torch.no_grad():
-        for batch in loader:
-            # Move data to device
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-
-            # Forward pass
-            outputs = model(input_ids, attention_mask=attention_mask)
-            logits = outputs.logits
-
-            # Compute loss
-            loss = loss_fn(logits, labels)
             total_loss += loss.item()
 
-            # Collect predictions and labels for evaluation
-            preds = torch.sigmoid(logits).cpu().numpy()
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().numpy())
+        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}")
 
-    avg_loss = total_loss / len(loader)
-    print(f"Evaluation Loss: {avg_loss:.4f}")
+    # save model checkpoint to test it later.
+    model_save_path = os.path.join("checkpoints", f"model_epoch_{epoch + 1}.pt")
+    torch.save(model.state_dict(), model_save_path)
 
-    # Convert predictions to binary (threshold = 0.5)
-    binary_preds = (np.array(all_preds) >= 0.5).astype(int)
 
-    # Metrics (example: F1-score)
-    from sklearn.metrics import f1_score
-    f1 = f1_score(all_labels, binary_preds, average="weighted")
-    print(f"F1 Score: {f1:.4f}")
+# Evaluation Loop
+def evaluate_model(model, dataloader, device):
+    model.to(device)
+    model.eval()
 
+    # COMPLETE THIS FUNCTION. could not do it yet because I was trying to fix the training loop.
 
 if __name__ == "__main__":
-    folder_path = "../data/raw-documents"
-    annotation_path = "../data/subtask-1-annotations.txt"
+    # Load data
+    texts, annotations = read_data("../data/EN/raw-documents", "../data/EN/subtask-1-annotations.txt")
+    print(len(texts), len(annotations))
 
-    # samples is a list of tokenized examples in this format:
-    # {"input_ids": ..., "attention_mask": ..., "labels": ...}
-    samples = create_samples(folder_path, annotation_path)
-    print("number of all labels: ", len(samples["labels"]))
-    print("number of all labels: ", len(samples["labels"][0]))
+    # Split data
+    train_texts, val_texts, train_annotations, val_annotations = train_test_split(
+        texts, annotations, test_size=0.2, random_state=42
+    )
 
+    # Load tokenizer
+    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
 
-    # Split data into train/val/test
-    train_samples, test_samples = train_test_split(samples, test_size=0.2, random_state=42)
-    val_samples, test_samples = train_test_split(test_samples, test_size=0.5, random_state=42)
+    # Create datasets
+    train_dataset = EntityFramingDataset(train_texts, train_annotations, tokenizer)
+    val_dataset = EntityFramingDataset(val_texts, val_annotations, tokenizer)
 
-    # Create PyTorch datasets
-    train_dataset = MultiLabelDataset(train_samples)
-    val_dataset = MultiLabelDataset(val_samples)
-    test_dataset = MultiLabelDataset(test_samples)
+    # Create data loaders
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=8, collate_fn=collate_fn)
 
-    # DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=8)
-    test_loader = DataLoader(test_dataset, batch_size=8)
-
-    # Load the BERT model for multi-label classification
-    model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=len(samples[0]['labels']))
+    # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print([len(classes2idx[i]) for i in range(3)])
+    print(len(role2idx))
+    #test it with multilingual bert  
+    model = EntityFramingModel("bert-base-uncased", len(role2idx), [len(classes2idx[i]) for i in range(3)])
+
+    # Move model to device
     model.to(device)
 
-    # Optimizer
-    optimizer = AdamW(model.parameters(), lr=5e-5)
-
-    # Learning rate scheduler
-    num_training_steps = len(train_loader) * 3  # Assuming 3 epochs
-    scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
+    # Initialize optimizer and scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    num_training_steps = 3 * len(train_loader)
+    # to adjust the learning rate during training
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=5e-5, total_steps=num_training_steps
+    )
 
     # Loss function
-    loss_fn = BCEWithLogitsLoss()
+    loss_fn = nn.BCEWithLogitsLoss()
 
-    # Train and Evaluate
-    train_model()
-    evaluate_model(val_loader)  # Evaluate on validation set
+    # Train model
+    train_model(model, train_loader, optimizer, 10, device)
 
-
-
-
+    # Evaluate model
+    evaluate_model(model, val_loader, device=device)
