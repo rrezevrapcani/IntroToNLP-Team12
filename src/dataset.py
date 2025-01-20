@@ -49,6 +49,9 @@ def read_data(articles_path, annotations_path):
     articles = os.listdir(articles_path)
     anno_df = create_anno_df(annotations_path)
 
+    articles_unique = anno_df["article_id"].unique()
+    articles = [article for article in articles if article in articles_unique]
+
     articles_content = []
     annotations = []
 
@@ -64,7 +67,7 @@ def read_data(articles_path, annotations_path):
             current_annotation.append([
                 None,
                 None, 
-                role2idx["O"],
+                main2idx["O"],
                 []
             ])
             
@@ -80,7 +83,7 @@ def read_data(articles_path, annotations_path):
             )
 
             main_role = article_annotations.loc[idx, "main_role"]
-            role_idx = role2idx[main_role]
+            role_idx = main2idx[main_role]
 
             fine_grained_roles = []
             if pd.notna(article_annotations.loc[idx, "fine-grained_role_1"]):
@@ -99,11 +102,12 @@ def read_data(articles_path, annotations_path):
     return articles_content, annotations
 
 
-role2idx = {"Protagonist": 0, "Antagonist": 1, "Innocent": 2, "O": 3}
-classes2idx = [
+main2idx = {"Protagonist": 0, "Antagonist": 1, "Innocent": 2, "None": 3}
+fine_grained2idx = [
     {"Guardian": 0, "Martyr": 1, "Peacemaker": 2, "Rebel": 3, "Underdog": 4, "Virtuous": 5},
     {"Instigator": 0, "Conspirator": 1, "Tyrant": 2, "Foreign Adversary": 3, "Traitor": 4, "Spy": 5, "Saboteur": 6, "Corrupt": 7, "Incompetent": 8, "Terrorist": 9, "Deceiver": 10, "Bigot": 11},
     {"Forgotten": 0, "Exploited": 1, "Victim": 2, "Scapegoat": 3},
+    {}
 ]
     
 class EntityFramingDataset(torch.utils.data.Dataset):
@@ -130,14 +134,14 @@ class EntityFramingDataset(torch.utils.data.Dataset):
             return_offsets_mapping=True,
         )
 
-        ner_labels = torch.zeros(encoding.input_ids.size(1), dtype=torch.long)  # Initialize NER labels
+        main_labels = torch.zeros(encoding.input_ids.size(1), dtype=torch.long)  # Initialize NER labels
         all_fine_grained_labels = []
         entity_spans = []  # Initialize entity spans list
         
         # Create zero-filled fine-grained labels for each role
-        for i, role in enumerate(role2idx.keys()):
-            if role != "O":
-                all_fine_grained_labels.append(torch.zeros(len(classes2idx[i])))
+        for i, role in enumerate(main2idx.keys()):
+            if role != "None":
+                all_fine_grained_labels.append(torch.zeros(len(fine_grained2idx[i])))
 
         # Fill in NER and fine-grained labels
         for start, end, role_idx, labels in annotations:
@@ -148,12 +152,12 @@ class EntityFramingDataset(torch.utils.data.Dataset):
             start_token = encoding.char_to_token(start) 
             end_token = encoding.char_to_token(end - 1)
             if start_token is not None and end_token is not None:
-                ner_labels[start_token:end_token + 1] = role_idx
+                main_labels[start_token:end_token + 1] = role_idx
                 entity_spans.append((start_token, end_token))  # Store the entity span
 
             if role_idx < len(all_fine_grained_labels):
                 for label in labels:
-                    label_idx = classes2idx[role_idx].get(label, None)
+                    label_idx = fine_grained2idx[role_idx].get(label, None)
                     if label_idx is not None:
                         all_fine_grained_labels[role_idx][label_idx] = 1.0
 
@@ -164,8 +168,7 @@ class EntityFramingDataset(torch.utils.data.Dataset):
             "input_ids": encoding["input_ids"].squeeze(),
             "attention_mask": encoding["attention_mask"].squeeze(),
             "token_type_ids": encoding["token_type_ids"].squeeze(),
-            "ner_labels": ner_labels,
+            "main_labels": main_labels,
             "fine_grained_labels": fine_grained_labels_tensor,
         }
-
 
