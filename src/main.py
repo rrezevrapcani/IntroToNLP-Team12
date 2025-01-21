@@ -2,195 +2,249 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
-from transformers import BertModel, BertTokenizerFast, Trainer, TrainingArguments
+from transformers import BertTokenizerFast
 from sklearn.model_selection import train_test_split
-from model import EntityFramingModel
-from dataset import EntityFramingDataset, main2idx, fine_grained2idx, read_data 
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
-from torch.nn.utils.rnn import pad_sequence
-
-'''
-FIRST DRAFT FINE-TUNING BERT FOR ENTITY FRAMING TASK
-
-CONSIDERATIONS:
-- The model is trained to predict the main role of an entity in a news article.
-- The model is also trained to predict secondary roles for the entity.
-- The secondary roles are specific to the main role.
-
-'''
+from model import EntityRoleClassifier
+from dataset import EntityFramingDataset, read_data
+from sklearn.metrics import accuracy_score, f1_score
+from torch.utils.data import DataLoader
+import argparse
 
 def collate_fn(batch):
     """
-    Custom collate function to handle batches with different sequence lengths
+    Custom collate function to handle variable-length entity annotations.
     """
-    input_ids = [item['input_ids'] for item in batch]
-    attention_masks = [item['attention_mask'] for item in batch]
-    token_type_ids = [item['token_type_ids'] for item in batch]
-    main_labels = [item['main_labels'] for item in batch]
-    fine_grained_labels = [item['fine_grained_labels'] for item in batch]
-    
-    input_ids = pad_sequence(input_ids, batch_first=True)
-    attention_masks = pad_sequence(attention_masks, batch_first=True)
-    token_type_ids = pad_sequence(token_type_ids, batch_first=True)
-    main_labels = pad_sequence(main_labels, batch_first=True)
-    
-    fine_grained_labels = torch.stack(fine_grained_labels)
-    
+    input_ids = torch.stack([item["input_ids"] for item in batch])
+    attention_mask = torch.stack([item["attention_mask"] for item in batch])
+    entity_start_positions = [item["entity_start_positions"] for item in batch]
+    entity_end_positions = [item["entity_end_positions"] for item in batch]
+    main_role_labels = [item["main_role_labels"] for item in batch]
+    fine_role_labels = [item["fine_role_labels"] for item in batch]
+
     return {
-        'input_ids': input_ids,
-        'attention_mask': attention_masks,
-        'token_type_ids': token_type_ids,
-        'main_labels': main_labels,
-        'fine_grained_labels': fine_grained_labels
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "entity_start_positions": entity_start_positions,
+        "entity_end_positions": entity_end_positions,
+        "main_role_labels": main_role_labels,
+        "fine_role_labels": fine_role_labels,
     }
 
-# Training Loop
-def train_model(model, dataloader, val_dataloader, optimizer, num_epochs, device):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epochs, device):
+    """
+    Trains the Entity Role Classifier Model.
+    """
     model.to(device)
-    model.train()
+    best_val_accuracy = 0.0
+    # using CrossEntropyLoss for main role classification and BCEWithLogitsLoss for fine-grained classification
+    loss_fn_main = nn.CrossEntropyLoss()
+    loss_fn_fine = nn.BCEWithLogitsLoss()
 
-    best_val_emr = float("inf")
-
-    # maybe something wrong here? also we have to save the best model..
     for epoch in range(num_epochs):
-        total_loss = 0
-
-        for batch in dataloader:
+        model.train()
+        train_loss = 0.0
+        for batch in train_loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            token_type_ids = batch["token_type_ids"].to(device)
-            main_labels = batch["main_labels"].to(device)
-            fine_grained_labels = batch["fine_grained_labels"].to(device)
+            entity_start_positions = batch["entity_start_positions"]
+            entity_end_positions = batch["entity_end_positions"]
+
+            #prepare main role labels to calculate loss
+            main_role_labels = torch.cat(
+                [labels[:len(positions)] for labels, positions in zip(batch["main_role_labels"], batch["entity_start_positions"])]
+            ).to(device)
+
+            #prepare fine-grained role labels to calculate loss, making sure they are in the same shape as the logits
+            fine_role_labels = {"protagonist": [], "antagonist": [], "innocent": []}
+            for labels, roles in zip(batch["fine_role_labels"],  batch["main_role_labels"]):
+                for idx, label in enumerate(labels):
+                    if(roles[idx] == 0): #protagonist
+                        fine_role_labels["protagonist"].append(label[:6])   
+                    if(roles[idx] == 1): #antagonist
+                        fine_role_labels["antagonist"].append(label[6:18])
+                    if(roles[idx] == 2):
+                        fine_role_labels["innocent"].append(label[18:22])
+            #convert to tensors
+            for key in fine_role_labels:
+                if len(fine_role_labels[key]) > 0:
+                    fine_role_labels[key] = torch.stack(fine_role_labels[key]).to(device)
+                    num_classes = model.fine_grained_classifiers[key][-2].out_features
+                    fine_role_labels[key] = fine_role_labels[key][:, :num_classes]
+                else:
+                    #create empty tensor if no labels are available
+                    num_classes = model.fine_grained_classifiers[key][-2].out_features
+                    fine_role_labels[key] = torch.empty(0, num_classes).to(device)
 
             optimizer.zero_grad()
-            
-            loss, ner_logits, fine_grained_logits = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
-                main_labels=main_labels,
-                fine_grained_labels=fine_grained_labels
-            )
 
+            outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
+
+            #calculate both losses
+            main_loss = loss_fn_main(outputs["main_role_logits"], main_role_labels)
+            fine_loss = 0.0
+
+            for role_key in outputs["fine_logits"]:
+                logits = outputs["fine_logits"][role_key]
+                labels = fine_role_labels[role_key]
+                
+                if logits.size(0) > 0 and labels.size(0) > 0:  # ensure both tensors have entries
+                    # align predictions and labels by truncating to the minimum size
+                    min_size = min(logits.size(0), labels.size(0))
+                    logits = logits[:min_size]
+                    labels = labels[:min_size]
+
+                    fine_loss += loss_fn_fine(logits, labels)
+                    
+                    # fine-grained loss is calculated only with the samples that the main role was predicted correctly
+
+            loss = main_loss + fine_loss
+
+            #backpropagation
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
-            total_loss += loss.item()
+            train_loss += loss.item()
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}")
+        avg_train_loss = train_loss / len(train_loader)
+        print(f"Epoch {epoch + 1}/{num_epochs}, Training Loss: {avg_train_loss:.4f}")
 
-        #call evaluate_model after each epoch
-        metrics = evaluate_model(model, val_dataloader, device)
-        print(f"{metrics}")
+        # evaluating epoch
+        val_accuracy, val_fine_match_ratio = evaluate_model(model, val_loader, device)
+        print(f"Validation Accuracy: {val_accuracy:.4f}, Fine-Grained Match Ratio: {val_fine_match_ratio:.4f}")
 
-        val_emr = metrics['fine_grained_exact_match'] 
-        if val_emr > best_val_emr:
-            best_val_emr = val_emr
-            model_save_path = os.path.join("checkpoints", f"best_model_epoch_{epoch + 1}.pt")
-            torch.save(model.state_dict(), model_save_path)
-            print(f"Saved best model at epoch {epoch + 1}")
-
+        #save model with best exact match ratio
+        if val_fine_match_ratio > best_val_accuracy:
+            best_val_accuracy = val_fine_match_ratio
+            torch.save(model.state_dict(), "best_entity_role_classifier.pt")
+            print("Saved best model.")
 
 
-# Evaluation Loop
-def evaluate_model(model, dataloader, device, threshold=0.3):  # Lower threshold from 0.5 to 0.3
+
+
+def evaluate_model(model, val_loader, device):
+    """
+    Evaluates the Entity Role Classifier Model.
+    """
+    model.to(device)
     model.eval()
-    all_main_preds = []
-    all_main_labels = []
-    all_fine_grained_preds = []
-    all_fine_grained_labels = []
-    
+    main_role_preds = []
+    main_role_labels = []
+    fine_role_preds = {"protagonist": [], "antagonist": [], "innocent": []}
+    fine_role_labels_dict = {"protagonist": [], "antagonist": [], "innocent": []}
+
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in val_loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            token_type_ids = batch["token_type_ids"].to(device)
-            main_labels = batch["main_labels"].to(device)
-            fine_grained_labels = batch["fine_grained_labels"].to(device)
-            
-            res = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids
-            )
-            if len(res) == 2:
-                main_logits, fine_grained_logits = res
-            else:
-                loss, main_logits, fine_grained_logits = res
-            
-            # main role predictions
-            main_preds = torch.argmax(main_logits, dim=-1)
-            
-            # get predictions for fine-grained roles, as multi-label classification we use sigmoid and select responses above threshold
-            fine_grained_concat = torch.cat(list(fine_grained_logits.values()), dim=1)
-            fine_grained_preds = (torch.sigmoid(fine_grained_concat) > threshold).long()
-            
-            for i in range(len(main_labels)):
-                mask = attention_mask[i].bool()
-                all_main_preds.extend(main_preds[i][mask].cpu().numpy())
-                all_main_labels.extend(main_labels[i][mask].cpu().numpy())
-                
-            all_fine_grained_preds.extend(fine_grained_preds.cpu().numpy())
-            all_fine_grained_labels.extend(fine_grained_labels.cpu().numpy())
-    
-    all_main_preds = np.array(all_main_preds)
-    all_main_labels = np.array(all_main_labels)
-    all_fine_grained_preds = np.array(all_fine_grained_preds)
-    all_fine_grained_labels = np.array(all_fine_grained_labels)
-    
-    # calculate metrics: accuracy for main role and exact match ratio for fine-grained roles
-    main_accuracy = accuracy_score(all_main_labels, all_main_preds)
+            entity_start_positions = batch["entity_start_positions"]
+            entity_end_positions = batch["entity_end_positions"]
+            batch_main_labels = torch.cat(batch["main_role_labels"]).to(device)
 
-    fine_grained_exact_match = np.mean([
-        np.array_equal(pred, label)
-        for pred, label in zip(all_fine_grained_preds, all_fine_grained_labels)
-        if label.sum() > 0 or pred.sum() > 0  
-    ])
-    
-    return {
-        'main_accuracy': main_accuracy,
-        'fine_grained_exact_match': fine_grained_exact_match,
-    }
+            #prepare fine-grained role labels
+            fine_role_labels = {"protagonist": [], "antagonist": [], "innocent": []}
+            for labels, roles in zip(
+                batch["fine_role_labels"], batch["main_role_labels"]
+            ):
+                for idx, label in enumerate(labels):
+                    if roles[idx] == 0:  # protagonist
+                        fine_role_labels["protagonist"].append(label[:6])
+                    if roles[idx] == 1:  # antagonist
+                        fine_role_labels["antagonist"].append(label[6:18])
+                    if roles[idx] == 2:  # innocent
+                        fine_role_labels["innocent"].append(label[18:22])
+
+            outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
+
+            # store main role predictions and labels
+            main_role_preds.extend(torch.argmax(outputs["main_role_logits"], dim=-1).cpu().tolist())
+            main_role_labels.extend(batch_main_labels.cpu().tolist())
+
+            # store fine-grained role predictions and labels
+            for role_key in outputs["fine_logits"]:
+                logits = outputs["fine_logits"][role_key]
+                labels = fine_role_labels[role_key]
+
+                if len(labels) > 0 and not isinstance(labels, torch.Tensor):
+                    labels = torch.stack(labels)
+
+                if logits.size(0) > 0:  
+                    fine_role_preds[role_key].extend((logits > 0.5).int().cpu().tolist())
+                    fine_role_labels_dict[role_key].extend(labels.cpu().tolist())
+
+    all_fine_preds = []
+    all_fine_labels = []
+    for role_key in fine_role_preds:
+        all_fine_preds.extend(fine_role_preds[role_key])
+        all_fine_labels.extend(fine_role_labels_dict[role_key])
+
+    # calculate metrics
+    main_accuracy = accuracy_score(main_role_labels, main_role_preds)
+    fine_match_ratio = np.mean(
+        [np.array_equal(p, l) for p, l in zip(all_fine_preds, all_fine_labels)]
+    )
+
+    return main_accuracy, fine_match_ratio
+
 
 if __name__ == "__main__":
-    # Load data
-    texts, annotations = read_data("../data/EN/raw-documents", "../data/EN/subtask-1-annotations.txt")
-    print(len(texts), len(annotations))
+    parser = argparse.ArgumentParser(description="Train Entity Role Classifier")
+    parser.add_argument("--data_path", type=str, default="../data/EN/raw-documents", help="Directory containing the data")
+    parser.add_argument("--annotation_file", type=str, default="../data/EN/subtask-1-annotations.txt", help="Annotation file")
+    parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Pretrained model name")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and validation")
+    parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs to train")
 
-    # Split data
+    args = parser.parse_args()
+    #load data
+    texts, annotations = read_data(args.data_path, args.annotation_file)
+    print(f"Loaded {len(texts)} articles with annotations.")
+
+    #split data
     train_texts, val_texts, train_annotations, val_annotations = train_test_split(
         texts, annotations, test_size=0.2, random_state=42
     )
 
-    # Load tokenizer
-    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+    #initialize tokenizer
+    tokenizer = BertTokenizerFast.from_pretrained(args.model_name)
 
-    # Create datasets
+    #create datasets
     train_dataset = EntityFramingDataset(train_texts, train_annotations, tokenizer)
     val_dataset = EntityFramingDataset(val_texts, val_annotations, tokenizer)
 
-    # # Create data loaders
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=8, collate_fn=collate_fn)
-
-    # Initialize model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = EntityFramingModel("bert-base-uncased", len(main2idx), [len(fine_grained2idx[i]) for i in range(3)])
-
-    # Move model to device
-    model.to(device)
-
-    # Initialize optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-    num_training_steps = 3 * len(train_loader)
-    # to adjust the learning rate during training
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=5e-5, total_steps=num_training_steps
+    #create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=8,
+        shuffle=True,
+        collate_fn=collate_fn #custom collate function to handle variable-length entity annotations
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=8,
+        shuffle=False,
+        collate_fn=collate_fn #custom collate function to handle variable-length entity annotations
     )
 
-    # Loss function
-    loss_fn = nn.BCEWithLogitsLoss()
+    #initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = EntityRoleClassifier(args.model_name)
 
-    # Train model
-    train_model(model, train_loader, val_loader, optimizer, 10, device)
+    #initialize optimizer and scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=5e-5,
+        total_steps=len(train_loader) * 10
+    )
+
+    #train model    
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        num_epochs=10,
+        device=device
+    )
