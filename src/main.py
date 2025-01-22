@@ -49,57 +49,51 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
             entity_start_positions = batch["entity_start_positions"]
             entity_end_positions = batch["entity_end_positions"]
 
-            #prepare main role labels to calculate loss
             main_role_labels = torch.cat(
                 [labels[:len(positions)] for labels, positions in zip(batch["main_role_labels"], batch["entity_start_positions"])]
             ).to(device)
 
-            #prepare fine-grained role labels to calculate loss, making sure they are in the same shape as the logits
-            fine_role_labels = {"protagonist": [], "antagonist": [], "innocent": []}
-            for labels, roles in zip(batch["fine_role_labels"],  batch["main_role_labels"]):
-                for idx, label in enumerate(labels):
-                    if(roles[idx] == 0): #protagonist
-                        fine_role_labels["protagonist"].append(label[:6])   
-                    if(roles[idx] == 1): #antagonist
-                        fine_role_labels["antagonist"].append(label[6:18])
-                    if(roles[idx] == 2):
-                        fine_role_labels["innocent"].append(label[18:22])
-            #convert to tensors
-            for key in fine_role_labels:
-                if len(fine_role_labels[key]) > 0:
-                    fine_role_labels[key] = torch.stack(fine_role_labels[key]).to(device)
-                    num_classes = model.fine_grained_classifiers[key][-2].out_features
-                    fine_role_labels[key] = fine_role_labels[key][:, :num_classes]
-                else:
-                    #create empty tensor if no labels are available
-                    num_classes = model.fine_grained_classifiers[key][-2].out_features
-                    fine_role_labels[key] = torch.empty(0, num_classes).to(device)
+            fine_role_labels = torch.cat(
+                [labels[:len(positions)] for labels, positions in zip(batch["fine_role_labels"], batch["entity_start_positions"])]
+            ).to(device)
 
             optimizer.zero_grad()
 
             outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
 
-            #calculate both losses
+            # calculate main role loss
             main_loss = loss_fn_main(outputs["main_role_logits"], main_role_labels)
-            fine_loss = 0.0
-
-            for role_key in outputs["fine_logits"]:
-                logits = outputs["fine_logits"][role_key]
-                labels = fine_role_labels[role_key]
+            
+            # calculate fine-grained loss for all samples, but mask incorrect main roles
+            batch_size = len(fine_role_labels)
+            fine_loss = torch.tensor(0.0, device=device)
+            
+            for i in range(batch_size):
+                main_pred = torch.argmax(outputs["main_role_logits"][i])
+                main_true = main_role_labels[i]
                 
-                if logits.size(0) > 0 and labels.size(0) > 0:  # ensure both tensors have entries
-                    # align predictions and labels by truncating to the minimum size
-                    min_size = min(logits.size(0), labels.size(0))
-                    logits = logits[:min_size]
-                    labels = labels[:min_size]
+                # get the relevant slice of fine-grained logits based on true main role
+                if main_true == 0:  # protagonist
+                    relevant_logits = outputs["fine_logits"][i, :6]
+                    relevant_labels = fine_role_labels[i, :6]
+                elif main_true == 1:  # antagonist
+                    relevant_logits = outputs["fine_logits"][i, 6:18]
+                    relevant_labels = fine_role_labels[i, 6:18]
+                else:  # innocent
+                    relevant_logits = outputs["fine_logits"][i, 18:]
+                    relevant_labels = fine_role_labels[i, 18:]
+                
+                # calculate loss with a weight based on main role prediction
+                weight = 1.0 if main_pred == main_true else 0.5
+                sample_fine_loss = weight * loss_fn_fine(relevant_logits, relevant_labels)
+                fine_loss += sample_fine_loss
+                
+            fine_loss = fine_loss / batch_size
+            
+            # combined loss with dynamic weighting
+            loss = main_loss 
 
-                    fine_loss += loss_fn_fine(logits, labels)
-                    
-                    # fine-grained loss is calculated only with the samples that the main role was predicted correctly
-
-            loss = main_loss + fine_loss
-
-            #backpropagation
+            # backpropagation
             loss.backward()
             optimizer.step()
             scheduler.step()
@@ -114,8 +108,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
         print(f"Validation Accuracy: {val_accuracy:.4f}, Fine-Grained Match Ratio: {val_fine_match_ratio:.4f}")
 
         #save model with best exact match ratio
-        if val_fine_match_ratio > best_val_accuracy:
-            best_val_accuracy = val_fine_match_ratio
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
             torch.save(model.state_dict(), "best_entity_role_classifier.pt")
             print("Saved best model.")
 
@@ -130,8 +124,8 @@ def evaluate_model(model, val_loader, device):
     model.eval()
     main_role_preds = []
     main_role_labels = []
-    fine_role_preds = {"protagonist": [], "antagonist": [], "innocent": []}
-    fine_role_labels_dict = {"protagonist": [], "antagonist": [], "innocent": []}
+    fine_role_preds = []
+    fine_role_labels = []
 
     with torch.no_grad():
         for batch in val_loader:
@@ -140,19 +134,7 @@ def evaluate_model(model, val_loader, device):
             entity_start_positions = batch["entity_start_positions"]
             entity_end_positions = batch["entity_end_positions"]
             batch_main_labels = torch.cat(batch["main_role_labels"]).to(device)
-
-            #prepare fine-grained role labels
-            fine_role_labels = {"protagonist": [], "antagonist": [], "innocent": []}
-            for labels, roles in zip(
-                batch["fine_role_labels"], batch["main_role_labels"]
-            ):
-                for idx, label in enumerate(labels):
-                    if roles[idx] == 0:  # protagonist
-                        fine_role_labels["protagonist"].append(label[:6])
-                    if roles[idx] == 1:  # antagonist
-                        fine_role_labels["antagonist"].append(label[6:18])
-                    if roles[idx] == 2:  # innocent
-                        fine_role_labels["innocent"].append(label[18:22])
+            batch_fine_labels = torch.cat(batch["fine_role_labels"]).to(device)
 
             outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
 
@@ -160,28 +142,14 @@ def evaluate_model(model, val_loader, device):
             main_role_preds.extend(torch.argmax(outputs["main_role_logits"], dim=-1).cpu().tolist())
             main_role_labels.extend(batch_main_labels.cpu().tolist())
 
-            # store fine-grained role predictions and labels
-            for role_key in outputs["fine_logits"]:
-                logits = outputs["fine_logits"][role_key]
-                labels = fine_role_labels[role_key]
+            fine_role_preds.extend((outputs["fine_logits"] > 0.5).int().cpu().tolist())
+            fine_role_labels.extend(batch_fine_labels.cpu().tolist())
 
-                if len(labels) > 0 and not isinstance(labels, torch.Tensor):
-                    labels = torch.stack(labels)
-
-                if logits.size(0) > 0:  
-                    fine_role_preds[role_key].extend((logits > 0.5).int().cpu().tolist())
-                    fine_role_labels_dict[role_key].extend(labels.cpu().tolist())
-
-    all_fine_preds = []
-    all_fine_labels = []
-    for role_key in fine_role_preds:
-        all_fine_preds.extend(fine_role_preds[role_key])
-        all_fine_labels.extend(fine_role_labels_dict[role_key])
 
     # calculate metrics
     main_accuracy = accuracy_score(main_role_labels, main_role_preds)
     fine_match_ratio = np.mean(
-        [np.array_equal(p, l) for p, l in zip(all_fine_preds, all_fine_labels)]
+        [np.array_equal(p, l) for p, l in zip(fine_role_preds, fine_role_labels)]
     )
 
     return main_accuracy, fine_match_ratio
@@ -209,8 +177,11 @@ if __name__ == "__main__":
     tokenizer = BertTokenizerFast.from_pretrained(args.model_name)
 
     #create datasets
-    train_dataset = EntityFramingDataset(train_texts, train_annotations, tokenizer)
-    val_dataset = EntityFramingDataset(val_texts, val_annotations, tokenizer)
+    train_dataset = EntityFramingDataset(texts, annotations, tokenizer)
+    texts, annotations = read_data("../dev_set/EN/subtask-1-documents", "gold.txt")
+    val_dataset = EntityFramingDataset(texts, annotations, tokenizer)
+    # train_dataset = EntityFramingDataset(train_texts, train_annotations, tokenizer)
+    # val_dataset = EntityFramingDataset(val_texts, val_annotations, tokenizer)
 
     #create data loaders
     train_loader = DataLoader(
@@ -234,7 +205,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=5e-5,
+        max_lr=2e-5,
         total_steps=len(train_loader) * 10
     )
 

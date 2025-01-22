@@ -69,32 +69,27 @@ def read_data(articles_path, annotations_path, with_annotations=True):
             entity = article_annotations.loc[idx, "entity_mention"]
             start = article_annotations.loc[idx, "start_offset"]
             end = article_annotations.loc[idx, "end_offset"]
-            if with_annotations:
-                main_role = article_annotations.loc[idx, "main_role"]
-                role_idx = main2idx[main_role]
-                fine_grained_roles = []
-                if pd.notna(article_annotations.loc[idx, "fine-grained_role_1"]):
-                    fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_1"]])
-                if pd.notna(article_annotations.loc[idx, "fine-grained_role_2"]):
-                    fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_2"]])
-                if pd.notna(article_annotations.loc[idx, "fine-grained_role_3"]):
-                    fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_3"]])
+            main_role = article_annotations.loc[idx, "main_role"]
+            if not with_annotations:
+                annotations.append((article, original_text, entity, start, end))
+                continue
+            role_idx = main2idx[main_role]
+            fine_grained_roles = []
+            if pd.notna(article_annotations.loc[idx, "fine-grained_role_1"]):
+                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_1"]])
+            if pd.notna(article_annotations.loc[idx, "fine-grained_role_2"]):
+                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_2"]])
+            if pd.notna(article_annotations.loc[idx, "fine-grained_role_3"]):
+                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_3"]])
 
-                current_annotation.append([
-                    start,
-                    end,
-                    role_idx, 
-                    fine_grained_roles
-                ])
-            else: 
-                annotations.append([
-                    article,
-                    original_text,
-                    entity,
-                    start,
-                    end,
-                ])
-        annotations.append(current_annotation)
+            current_annotation.append([
+                start,
+                end,
+                role_idx, 
+                fine_grained_roles
+            ])
+        if with_annotations:
+            annotations.append(current_annotation)
         articles_content.append(original_text)
     return articles_content, annotations
 
