@@ -14,17 +14,17 @@ def generate_predictions(test_data, model_checkpoint, output_file, device, max_l
 
     tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
     model = EntityRoleClassifier("bert-base-uncased")
-    model.load_state_dict(torch.load(model_checkpoint, map_location=device))
+    model.load_state_dict(torch.load(model_checkpoint, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
 
     threshold = 0.51
     fine_role_names = [
-        "Guardian", "Martyr", "Peacemaker", "Rebel", "Underdog", "Virtuous",  # Protagonist (0-5)
+        "Guardian", "Martyr", "Peacemaker", "Rebel", "Underdog", "Virtuous",  # protagonist (0-5)
         "Instigator", "Conspirator", "Tyrant", "Foreign Adversary",
         "Traitor", "Spy", "Saboteur", "Corrupt", "Incompetent",
-        "Terrorist", "Deceiver", "Bigot",  # Antagonist (6-17)
-        "Forgotten", "Exploited", "Victim", "Scapegoat"  # Innocent (18-21)
+        "Terrorist", "Deceiver", "Bigot",  # antagonist (6-17)
+        "Forgotten", "Exploited", "Victim", "Scapegoat"  # innocent (18-21)
     ]
 
     unique_predictions = {}
@@ -36,26 +36,15 @@ def generate_predictions(test_data, model_checkpoint, output_file, device, max_l
                     print(f"Skipping empty or invalid text for article_id {article_id}")
                     continue
 
-                words = text.split()
-                total_chars = 0
-                window_start_char = 0
+                text_length = len(text)
+                window_start = 0
+                window_end = max_length
 
-                for i, word in enumerate(words):
-                    if total_chars <= start_offset:
-                        window_start_char = total_chars
-                    total_chars += len(word) + 1
+                while window_start < text_length:
+                    window_text = text[window_start:window_end]
 
-                context_before = text[max(0, window_start_char - max_length // 4):start_offset]
-                entity_text = text[start_offset:end_offset + 1]
-                context_after = text[end_offset + 1:min(len(text), end_offset + max_length // 4)]
-                chunk_text = context_before + entity_text + context_after
-
-                adjusted_start = len(context_before)
-                adjusted_end = len(context_before) + len(entity_text) - 1
-
-                try:
                     encoding = tokenizer(
-                        chunk_text,
+                        window_text,
                         padding="max_length",
                         truncation=True,
                         max_length=max_length,
@@ -65,51 +54,53 @@ def generate_predictions(test_data, model_checkpoint, output_file, device, max_l
 
                     input_ids = encoding["input_ids"].to(device)
                     attention_mask = encoding["attention_mask"].to(device)
+                    token_type_ids = encoding["token_type_ids"].to(device)
+                    offsets_mapping = encoding["offset_mapping"][0].cpu().numpy()
 
-                    token_start = encoding.char_to_token(adjusted_start)
-                    token_end = encoding.char_to_token(adjusted_end)
+                    # adjust start and end offsets
+                    adjusted_start_offset = start_offset - window_start
+                    adjusted_end_offset = end_offset - window_start
+
+                    token_start = None
+                    token_end = None
+
+                    for idx, (start, end) in enumerate(offsets_mapping):
+                        if start <= adjusted_start_offset < end:
+                            token_start = idx
+                        if start < adjusted_end_offset <= end:
+                            token_end = idx
 
                     if token_start is not None and token_end is not None:
                         outputs = model(
-                            input_ids,
-                            attention_mask,
-                            torch.tensor([[token_start]], dtype=torch.long).to(device),
-                            torch.tensor([[token_end]], dtype=torch.long).to(device)
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            entity_start_positions=torch.tensor([[token_start]], dtype=torch.long).to(device),
+                            entity_end_positions=torch.tensor([[token_end]], dtype=torch.long).to(device)
                         )
 
                         main_role_pred = torch.argmax(outputs["main_role_logits"], dim=-1).item()
                         main_role = ["Protagonist", "Antagonist", "Innocent"][main_role_pred]
 
-                        fine_logits = torch.sigmoid(outputs["fine_logits"])
-                        fine_logits = fine_logits.squeeze(0)
+                        fine_logits = outputs["fine_logits"].squeeze(0).cpu()
+                        print(fine_logits)
 
-                        if main_role == "Protagonist":
-                            relevant_indices = list(range(6))
-                        elif main_role == "Antagonist":
-                            relevant_indices = list(range(6, 18))
-                        elif main_role == "Innocent":
-                            relevant_indices = list(range(18, 22))
-
-                        relevant_logits = fine_logits[relevant_indices]
-                        print(relevant_logits)
-
-                        topk_results = torch.topk(relevant_logits, min(2, len(relevant_indices)))
+                        topk_results = torch.topk(fine_logits, min(2, len(fine_logits)))
                         fine_roles = [
-                            idx + relevant_indices[0]
+                            idx 
                             for idx, score in zip(topk_results.indices.tolist(), topk_results.values.tolist())
                             if score > threshold
                         ]
 
-                        fine_roles_str = ", ".join([fine_role_names[idx] for idx in fine_roles])
+                        fine_roles_str = "\t".join([fine_role_names[idx] for idx in fine_roles])
 
                         unique_predictions[(article_id, entity_mention, start_offset, end_offset)] = (main_role, fine_roles_str)
 
-                except Exception as e:
-                    print(f"Error processing entity {entity_mention} in article {article_id}: {str(e)}")
-                    unique_predictions[(article_id, entity_mention, start_offset, end_offset)] = ("Innocent", "Victim")
+                    window_start += max_length - overlap
+                    window_end = min(window_start + max_length, text_length)
 
         for (article_id, entity_mention, start_offset, end_offset), (main_role, fine_roles_str) in unique_predictions.items():
-            f.write(f"{article_id}\t{entity_mention}\t{start_offset}\t{end_offset}\t{main_role}\t{fine_roles_str.replace(', ', '\t')}\n")
+            f.write(f"{article_id}\t{entity_mention}\t{start_offset}\t{end_offset}\t{main_role}\t{fine_roles_str}\n")
+
 
 
 
@@ -156,5 +147,4 @@ if __name__ == "__main__":
     )
     
     # calculate_metrics("predictions.txt", "gold.txt")
-
 

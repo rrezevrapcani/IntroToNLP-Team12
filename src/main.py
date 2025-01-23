@@ -16,6 +16,7 @@ def collate_fn(batch):
     """
     input_ids = torch.stack([item["input_ids"] for item in batch])
     attention_mask = torch.stack([item["attention_mask"] for item in batch])
+    token_type_ids = torch.stack([item["token_type_ids"] for item in batch])
     entity_start_positions = [item["entity_start_positions"] for item in batch]
     entity_end_positions = [item["entity_end_positions"] for item in batch]
     main_role_labels = [item["main_role_labels"] for item in batch]
@@ -24,6 +25,7 @@ def collate_fn(batch):
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
+        "token_type_ids": token_type_ids,
         "entity_start_positions": entity_start_positions,
         "entity_end_positions": entity_end_positions,
         "main_role_labels": main_role_labels,
@@ -46,6 +48,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
         for batch in train_loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            token_type_ids = batch["token_type_ids"].to(device)
             entity_start_positions = batch["entity_start_positions"]
             entity_end_positions = batch["entity_end_positions"]
 
@@ -56,10 +59,10 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
             fine_role_labels = torch.cat(
                 [labels[:len(positions)] for labels, positions in zip(batch["fine_role_labels"], batch["entity_start_positions"])]
             ).to(device)
+            
+            optimizer.zero_grad()   
 
-            optimizer.zero_grad()
-
-            outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
+            outputs = model(input_ids, attention_mask, token_type_ids, entity_start_positions, entity_end_positions)
 
             # calculate main role loss
             main_loss = loss_fn_main(outputs["main_role_logits"], main_role_labels)
@@ -91,7 +94,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
             fine_loss = fine_loss / batch_size
             
             # combined loss with dynamic weighting
-            loss = main_loss 
+            loss = 1.2 * main_loss + fine_loss
 
             # backpropagation
             loss.backward()
@@ -114,8 +117,6 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
             print("Saved best model.")
 
 
-
-
 def evaluate_model(model, val_loader, device):
     """
     Evaluates the Entity Role Classifier Model.
@@ -131,12 +132,13 @@ def evaluate_model(model, val_loader, device):
         for batch in val_loader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            tokens_type_ids = batch["token_type_ids"].to(device)
             entity_start_positions = batch["entity_start_positions"]
             entity_end_positions = batch["entity_end_positions"]
             batch_main_labels = torch.cat(batch["main_role_labels"]).to(device)
             batch_fine_labels = torch.cat(batch["fine_role_labels"]).to(device)
 
-            outputs = model(input_ids, attention_mask, entity_start_positions, entity_end_positions)
+            outputs = model(input_ids, attention_mask, tokens_type_ids, entity_start_positions, entity_end_positions)
 
             # store main role predictions and labels
             main_role_preds.extend(torch.argmax(outputs["main_role_logits"], dim=-1).cpu().tolist())
@@ -178,7 +180,7 @@ if __name__ == "__main__":
 
     #create datasets
     train_dataset = EntityFramingDataset(texts, annotations, tokenizer)
-    texts, annotations = read_data("../dev_set/EN/subtask-1-documents", "gold.txt")
+    texts, annotations = read_data("../dev_set/EN/subtask-1-documents", "../dev_set/EN/subtask-1-annotations.txt")
     val_dataset = EntityFramingDataset(texts, annotations, tokenizer)
     # train_dataset = EntityFramingDataset(train_texts, train_annotations, tokenizer)
     # val_dataset = EntityFramingDataset(val_texts, val_annotations, tokenizer)
@@ -203,11 +205,7 @@ if __name__ == "__main__":
 
     #initialize optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=2e-5,
-        total_steps=len(train_loader) * 10
-    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
 
     #train model    
     train_model(

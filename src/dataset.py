@@ -193,6 +193,7 @@ class EntityFramingDataset(Dataset):
         
         input_ids = encoding["input_ids"].squeeze()
         attention_mask = encoding["attention_mask"].squeeze()
+        token_type_ids = encoding["token_type_ids"].squeeze()
         
         entity_start_positions = []
         entity_end_positions = []
@@ -229,6 +230,7 @@ class EntityFramingDataset(Dataset):
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
+            "token_type_ids": token_type_ids,
             "entity_start_positions": entity_start_positions,
             "entity_end_positions": entity_end_positions,
             "main_role_labels": main_role_labels,
