@@ -111,8 +111,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, num_epoch
         print(f"Validation Accuracy: {val_accuracy:.4f}, Fine-Grained Match Ratio: {val_fine_match_ratio:.4f}")
 
         #save model with best exact match ratio
-        if val_accuracy > best_val_accuracy:
-            best_val_accuracy = val_accuracy
+        if val_fine_match_ratio > best_val_accuracy:
+            best_val_accuracy = val_fine_match_ratio
             torch.save(model.state_dict(), "best_entity_role_classifier.pt")
             print("Saved best model.")
 
@@ -159,11 +159,11 @@ def evaluate_model(model, val_loader, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Entity Role Classifier")
-    parser.add_argument("--data_path", type=str, default="../data/EN/raw-documents", help="Directory containing the data")
-    parser.add_argument("--annotation_file", type=str, default="../data/EN/subtask-1-annotations.txt", help="Annotation file")
-    parser.add_argument("--model_name", type=str, default="bert-base-uncased", help="Pretrained model name")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and validation")
-    parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs to train")
+    parser.add_argument("--data-path", type=str, default="../data/EN/raw-documents", help="Directory containing the data")
+    parser.add_argument("--annotation-file", type=str, default="../data/EN/subtask-1-annotations.txt", help="Annotation file")
+    parser.add_argument("--model-name", type=str, default="bert-base-uncased", help="Pretrained model name")
+    parser.add_argument("--batch-size", type=int, default=8, help="Batch size for training and validation")
+    parser.add_argument("--num-epochs", type=int, default=10, help="Number of epochs to train")
 
     args = parser.parse_args()
     #load data

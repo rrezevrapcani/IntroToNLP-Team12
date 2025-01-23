@@ -7,13 +7,13 @@ from dataset import read_data
 from model import EntityRoleClassifier
 from sklearn.metrics import accuracy_score
 
-def generate_predictions(test_data, model_checkpoint, output_file, device, max_length=512, overlap=128):
+def generate_predictions(test_data, model_name, model_checkpoint, output_file, device, max_length=512, overlap=128):
     from transformers import BertTokenizerFast
     import torch
     import numpy as np
 
-    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
-    model = EntityRoleClassifier("bert-base-uncased")
+    tokenizer = BertTokenizerFast.from_pretrained(model_name)
+    model = EntityRoleClassifier(model_name)
     model.load_state_dict(torch.load(model_checkpoint, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
@@ -74,6 +74,7 @@ def generate_predictions(test_data, model_checkpoint, output_file, device, max_l
                         outputs = model(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
+                            token_type_ids=token_type_ids,
                             entity_start_positions=torch.tensor([[token_start]], dtype=torch.long).to(device),
                             entity_end_positions=torch.tensor([[token_end]], dtype=torch.long).to(device)
                         )
@@ -131,6 +132,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", type=str, default="../dev_set/EN/subtask-1-documents", help="Directory containing the data")
     parser.add_argument("--entities-mention", type=str, default="../dev_set/EN/subtask-1-entity-mentions.txt", help="Annotation file")
     parser.add_argument("--model-checkpoint", type=str, default="best_entity_role_classifier.pt", help="Fine-tuning weights")
+    parser.add_argument("--model-name", type=str, default="bert-base-uncased", help="BERT model name")
     parser.add_argument("--output-file", type=str, default="predictions.txt", help="Output file whose predictions are to be saved")
 
     args = parser.parse_args()
@@ -141,6 +143,7 @@ if __name__ == "__main__":
 
     generate_predictions(
         test_data=annotations,
+        model_name=args.model_name,
         model_checkpoint=args.model_checkpoint,
         output_file=args.output_file,
         device="cuda" if torch.cuda.is_available() else "cpu"

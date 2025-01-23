@@ -218,6 +218,7 @@ class EntityFramingDataset(Dataset):
             fine_label_vector = torch.zeros(22, dtype=torch.float)
             for role in fine_grained_roles:
                 fine_label_vector[self.fine_role2idx[role]] = 1.0
+            # print(fine_label_vector.count_nonzero() == len(fine_grained_roles))
             fine_role_labels.append(fine_label_vector)
         
         #convert to tensors
