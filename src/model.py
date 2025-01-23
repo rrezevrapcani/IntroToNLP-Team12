@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers import BertModel
+import numpy as np
 
 class EntityRoleClassifier(nn.Module):
     """
@@ -17,7 +18,7 @@ class EntityRoleClassifier(nn.Module):
         self.bert = BertModel.from_pretrained(bert_model_name)
         
         self.hidden_dim = self.bert.config.hidden_size
-        self.hidden_layer_dim = 256
+        self.hidden_layer_dim = 512
         
         # main role classification head
         self.main_role_classifier = nn.Sequential(
@@ -83,17 +84,23 @@ class EntityRoleClassifier(nn.Module):
         main_role_pred = torch.argmax(main_role_probs, dim=-1)
 
         #fine-grained classification, apply sigmoid to get probabilities
-        fine_logits = {"protagonist": [], "antagonist": [], "innocent": []}
+        fine_logits = []
         for idx, role in enumerate(main_role_pred):
+            fine_logits.append(np.zeros(22))
             role_key = ["protagonist", "antagonist", "innocent"][role]
-            fine_logits[role_key].append(self.fine_grained_classifiers[role_key](entity_embeddings[idx]))
+            logits = self.fine_grained_classifiers[role_key](entity_embeddings[idx])
+            logits = logits.cpu().detach().numpy()  
+            if role_key == "protagonist":
+                fine_logits[idx][:6] = logits
+            elif role_key == "antagonist":
+                fine_logits[idx][6:18] = logits
+            else:
+                fine_logits[idx][18:] = logits
+
+        fine_logits = np.array(fine_logits)
 
         #convert them to tensors
-        for key in fine_logits:
-            if len(fine_logits[key]) > 0:
-                fine_logits[key] = torch.stack(fine_logits[key])
-            else:
-                fine_logits[key] = torch.empty(0, self.fine_grained_classifiers[key][-2].out_features).to(input_ids.device)
+        fine_logits = torch.tensor(fine_logits, device=input_ids.device)
         
         return {
             "main_role_logits": main_role_logits,
