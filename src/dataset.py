@@ -76,11 +76,11 @@ def read_data(articles_path, annotations_path, with_annotations=True):
             role_idx = main2idx[main_role]
             fine_grained_roles = []
             if pd.notna(article_annotations.loc[idx, "fine-grained_role_1"]):
-                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_1"]])
+                fine_grained_roles.append(article_annotations.loc[idx, "fine-grained_role_1"])
             if pd.notna(article_annotations.loc[idx, "fine-grained_role_2"]):
-                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_2"]])
+                fine_grained_roles.append(article_annotations.loc[idx, "fine-grained_role_2"])
             if pd.notna(article_annotations.loc[idx, "fine-grained_role_3"]):
-                fine_grained_roles.append(fine_grained2idx[role_idx][article_annotations.loc[idx, "fine-grained_role_3"]])
+                fine_grained_roles.append(article_annotations.loc[idx, "fine-grained_role_3"])
 
             current_annotation.append([
                 start,
@@ -213,18 +213,18 @@ class EntityFramingDataset(Dataset):
             entity_end_positions.append(token_end - 1)
             main_role_labels.append(main_role_idx)
             
-            #create fine-grained role label vector(size: [22])
-            fine_label_vector = torch.zeros(len(self.fine_role2idx), dtype=torch.float)
+            # create fine-grained role label vector(size: [22])
+            fine_label_vector = torch.zeros(22, dtype=torch.float)
             for role in fine_grained_roles:
-                if role in self.fine_role2idx:
-                    fine_label_vector[self.fine_role2idx[role]] = 1.0
+                fine_label_vector[self.fine_role2idx[role]] = 1.0
             fine_role_labels.append(fine_label_vector)
         
         #convert to tensors
         entity_start_positions = torch.tensor(entity_start_positions, dtype=torch.long)
         entity_end_positions = torch.tensor(entity_end_positions, dtype=torch.long)
         main_role_labels = torch.tensor(main_role_labels, dtype=torch.long)
-        fine_role_labels = torch.stack(fine_role_labels)
+        fine_label_vector = torch.stack(fine_role_labels)
+
         
         return {
             "input_ids": input_ids,
@@ -232,7 +232,7 @@ class EntityFramingDataset(Dataset):
             "entity_start_positions": entity_start_positions,
             "entity_end_positions": entity_end_positions,
             "main_role_labels": main_role_labels,
-            "fine_role_labels": fine_role_labels
+            "fine_role_labels": fine_label_vector
         }
 
 
