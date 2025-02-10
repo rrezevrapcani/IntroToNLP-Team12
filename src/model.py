@@ -8,14 +8,7 @@ class EntityRoleClassifier(nn.Module):
         self.bert = BertModel.from_pretrained(bert_model_name, ignore_mismatched_sizes=True)
 
         self.hidden_dim = self.bert.config.hidden_size
-        self.hidden_layer_dim = 512
-
-        # Weight initialization
-        def init_weights(module):
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        self.hidden_layer_dim = 256
 
         # main role classification head
         self.main_role_classifier = nn.Sequential(
@@ -24,7 +17,6 @@ class EntityRoleClassifier(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(self.hidden_layer_dim, 3)
         )
-        self.main_role_classifier.apply(init_weights)
 
         # fine-grained classification heads
         self.fine_grained_classifiers = {
@@ -50,9 +42,6 @@ class EntityRoleClassifier(nn.Module):
                 nn.Sigmoid()
             )
         }
-        # apply weight initialization to fine-grained classifiers
-        for classifier in self.fine_grained_classifiers.values():
-            classifier.apply(init_weights)
 
     def forward(self, input_ids, attention_mask, token_type_ids, entity_start_positions, entity_end_positions):
         # numerical stability check for input (needs for BERTimbau)

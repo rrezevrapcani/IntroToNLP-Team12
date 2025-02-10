@@ -11,22 +11,28 @@ fine_grained2idx = [
     {"Forgotten": 0, "Exploited": 1, "Victim": 2, "Scapegoat": 3},
 ]
 
-# def clean_article(text):
-#     '''
-#     Cleans a single article by removing non-ASCII characters, unwanted symbols, and normalizing whitespace.
-#     :param text: text from the article
-#     :return: cleaned text
-#     '''
-#     # Remove non-ASCII characters (e.g., emojis, special symbols)
-#     text = text.encode("ascii", "ignore").decode("utf-8")
+#deal with emojis in articles so the entities offset are not messed up
+def replace_emojis_with_codes(text):
+    def emoji_to_code(match):
+        emoji = match.group()
+        return ''.join(f'::' for char in emoji)
 
-#     # Remove unwanted symbols (e.g., @, #, $, etc.)
-#     text = re.sub(r"[^\w\s.,!?']", "", text)
-
-#     # Normalize whitespace
-#     text = re.sub(r"\s+", " ", text).strip()
-
-#     return text
+    emoji_pattern = re.compile(
+        "["
+        u"\U0001F600-\U0001F64F"  
+        u"\U0001F300-\U0001F5FF" 
+        u"\U0001F680-\U0001F6FF"  
+        u"\U0001F700-\U0001F77F"  
+        u"\U0001F780-\U0001F7FF" 
+        u"\U0001F800-\U0001F8FF" 
+        u"\U0001F900-\U0001F9FF"  
+        u"\U0001FA00-\U0001FA6F" 
+        u"\U0001FA70-\U0001FAFF"  
+        u"\U00002702-\U000027B0"  
+        u"\U000024C2-\U0001F251" 
+        "]+", flags=re.UNICODE)
+    
+    return emoji_pattern.sub(emoji_to_code, text)
 
 def create_anno_df(annotation_path):
     '''
@@ -61,15 +67,22 @@ def read_data(articles_path, annotations_path, with_annotations=True):
     for article in articles:
         with open(os.path.join(articles_path, article), "r", encoding="utf-8") as file:
             original_text = file.read()
+        original_text = replace_emojis_with_codes(original_text)
 
         article_annotations = anno_df[anno_df["article_id"] == article]
         current_annotation = []
+        
 
         for idx in article_annotations.index:
             entity = article_annotations.loc[idx, "entity_mention"]
             start = article_annotations.loc[idx, "start_offset"]
             end = article_annotations.loc[idx, "end_offset"]
             main_role = article_annotations.loc[idx, "main_role"]
+
+            # debuging to see if offsets are correct
+            # if entity != original_text[start:end + 1]:
+            #     print(entity, original_text[start:end + 1])
+            #     continue
             if not with_annotations:
                 annotations.append((article, original_text, entity, start, end))
                 continue
@@ -88,38 +101,14 @@ def read_data(articles_path, annotations_path, with_annotations=True):
                 role_idx, 
                 fine_grained_roles
             ])
+        if with_annotations and len(current_annotation) == 0:
+            continue
         if with_annotations:
             annotations.append(current_annotation)
         articles_content.append(original_text)
     return articles_content, annotations
 
 
-class EntityFramingDataset(Dataset):
-    def __init__(self, texts, annotations, tokenizer, max_length=512):
-        self.texts = texts
-        self.annotations = annotations
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-        # Define role mappings
-        self.protagonist_roles = ["Guardian", "Martyr", "Peacemaker", "Rebel", "Underdog", "Virtuous"]
-        self.antagonist_roles = ["Instigator", "Conspirator", "Tyrant", "Foreign Adversary", 
-                                 "Traitor", "Spy", "Saboteur", "Corrupt", "Incompetent", 
-                                 "Terrorist", "Deceiver", "Bigot"]
-        self.innocent_roles = ["Forgotten", "Exploited", "Victim", "Scapegoat"]
-        
-        # Create fine-grained role to index mapping
-        self.fine_role2idx = {}
-        for i, role in enumerate(self.protagonist_roles):
-            self.fine_role2idx[role] = i
-        for i, role in enumerate(self.antagonist_roles):
-            self.fine_role2idx[role] = i + len(self.protagonist_roles)
-        for i, role in enumerate(self.innocent_roles):
-            self.fine_role2idx[role] = i + len(self.protagonist_roles) + len(self.antagonist_roles)
-    
-    def __len__(self):
-        return len(self.texts)
-    
 class EntityFramingDataset(Dataset):
     def __init__(self, texts, annotations, tokenizer, max_length=512):
         self.tokenizer = tokenizer
