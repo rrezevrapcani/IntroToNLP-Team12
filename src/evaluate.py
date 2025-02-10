@@ -1,17 +1,11 @@
 import torch
-import pandas as pd
 import argparse
-import os
 from transformers import BertTokenizerFast
 from dataset import read_data
 from model import EntityRoleClassifier
-from sklearn.metrics import accuracy_score
+
 
 def generate_predictions(test_data, model_name, model_checkpoint, output_file, device, max_length=512, overlap=128):
-    from transformers import BertTokenizerFast
-    import torch
-    import numpy as np
-
     tokenizer = BertTokenizerFast.from_pretrained(model_name)
     model = EntityRoleClassifier(model_name)
     model.load_state_dict(torch.load(model_checkpoint, map_location=device, weights_only=True))
@@ -103,30 +97,6 @@ def generate_predictions(test_data, model_name, model_checkpoint, output_file, d
             f.write(f"{article_id}\t{entity_mention}\t{start_offset}\t{end_offset}\t{main_role}\t{fine_roles_str}\n")
 
 
-
-
-# not working
-def calculate_metrics(predictions_file, gold_file):
-    df_predictions = pd.read_csv(predictions_file, sep="\t", header=None)
-    df_gold = pd.read_csv(gold_file, sep="\t", header=None)
-
-    df_predictions.columns = ["article_id", "entity_mention", "start_offset", "end_offset", "main_role", "fine_roles"]
-    df_gold.columns = ["article_id", "entity_mention", "start_offset", "end_offset", "main_role", "fine_roles"]
-
-    df_merged = pd.merge(df_predictions, df_gold, on=["article_id", "entity_mention", "start_offset", "end_offset"], suffixes=("_pred", "_gold"))
-
-    main_role_accuracy = accuracy_score(df_merged["main_role_gold"], df_merged["main_role_pred"])
-
-    def exact_match_ratio(pred, gold):
-        pred_set = set(pred.split(", "))
-        gold_set = set(gold.split(", "))
-        return pred_set == gold_set
-
-    fine_role_exact_matches = df_merged.apply(lambda row: exact_match_ratio(row["fine_roles_pred"], row["fine_roles_gold"]), axis=1)
-    fine_role_exact_match_ratio = fine_role_exact_matches.mean()
-
-    return main_role_accuracy, fine_role_exact_match_ratio
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Entity Role Classifier")
     parser.add_argument("--data-path", type=str, default="../dev_set/EN/subtask-1-documents", help="Directory containing the data")
@@ -148,6 +118,3 @@ if __name__ == "__main__":
         output_file=args.output_file,
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
-    
-    # calculate_metrics("predictions.txt", "gold.txt")
-
